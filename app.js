@@ -1,4 +1,4 @@
-const APP_TITLE = "加班費月曆計算器";
+const APP_TITLE = "月度加班費試算";
 const DATASET_URL = "https://data.ntpc.gov.tw/api/datasets/308DCD75-6434-45BC-A95F-584DA4FED251/json?page=0&size=10000";
 const DGPA_DATASET_PAGE = "https://data.gov.tw/dataset/14718?page=3";
 const HOURLY_DIVISOR = 240;
