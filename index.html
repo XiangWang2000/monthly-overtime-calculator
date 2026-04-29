@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>加班費月曆計算器</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="app">
+    <section class="topbar" aria-label="月曆控制">
+      <h1>加班費月曆計算器</h1>
+      <div class="date-controls">
+        <div class="control-group">
+          <label for="yearInput">年度</label>
+          <input class="year-input" id="yearInput" type="number" inputmode="numeric" step="1">
+        </div>
+        <div class="control-group">
+          <label for="monthInput">月份</label>
+          <input class="month-input" id="monthInput" type="number" inputmode="numeric" min="1" max="12" step="1">
+        </div>
+      </div>
+      <div class="actions">
+        <button class="text-btn" id="refreshCalendar" type="button">更新行事曆</button>
+        <button class="text-btn" id="todayButton" type="button">回到今天</button>
+        <label class="ghost-btn" for="cacheFile">匯入快取</label>
+        <input class="file-input" id="cacheFile" type="file" accept=".json,application/json">
+      </div>
+      <div class="status" id="statusText" role="status">正在讀取行事曆...</div>
+    </section>
+
+    <section class="layout">
+      <section class="calendar-shell" aria-label="加班月曆">
+        <div class="weekday-grid" id="weekdayGrid"></div>
+        <div class="calendar-grid" id="calendarGrid"></div>
+      </section>
+
+      <aside class="side-panel" aria-label="加班資料與本月試算">
+        <h2 class="panel-title">加班資料</h2>
+        <p class="selected-info" id="selectedInfo"></p>
+
+        <div class="form-grid">
+          <label for="salaryInput">月薪</label>
+          <input id="salaryInput" type="text" inputmode="decimal" autocomplete="off" value="30000">
+
+          <label for="dayTypeInput">日期類型</label>
+          <select id="dayTypeInput"></select>
+
+          <label for="hoursInput">小時</label>
+          <input id="hoursInput" type="number" inputmode="numeric" min="0" max="24" step="1" value="0">
+
+          <label for="minutesInput">分鐘</label>
+          <input id="minutesInput" type="number" inputmode="numeric" min="0" max="59" step="1" value="0">
+        </div>
+
+        <div class="side-actions">
+          <button class="primary-btn" id="saveDay" type="button">儲存此日</button>
+          <button class="text-btn" id="clearDay" type="button">清除此日</button>
+        </div>
+
+        <hr>
+
+        <h2 class="panel-title">本月試算</h2>
+        <p class="result" id="resultText"></p>
+        <p class="breakdown" id="breakdownText"></p>
+        <p class="warning" id="warningText"></p>
+        <p class="note">計算基準：月薪 ÷ 240 為平日每小時工資；
+平日採前2小時4/3、再2小時5/3；
+休息日採前2小時4/3、2至8小時5/3、逾8小時8/3；
+國定假日、特休與例假以另加發一倍工資估算。</p>
+      </aside>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="alert"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
