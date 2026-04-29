@@ -1,59 +1,82 @@
 (function initOvertimeCalendarData() {
+  const config = window.OvertimeAppConfig;
   const shared = window.OvertimeAppShared;
 
-  if (!shared) {
-    throw new Error("OvertimeAppShared is required before calendar-data.js");
+  if (!config || !shared) {
+    throw new Error("config.js and shared.js are required before calendar-data.js");
   }
 
   const {
+    BUNDLED_CALENDAR_PATH,
     DATASET_URL,
     DGPA_DATASET_PAGE,
     CALENDAR_STORE_KEY,
+  } = config;
+
+  const {
     readStorage,
     writeStorage,
     cleanText,
     normalizeRawDate,
     isYes,
     dateFromCompact,
-    dateKey,
-    compactDate,
     decodeHtml,
     decodeURIComponentSafe,
   } = shared;
 
   window.OvertimeCalendarData = {
     readStoredCalendarRows,
+    writeStoredCalendarRows,
     fetchBundledCalendarRows,
     fetchAndStoreRemoteCalendarRows,
-    normalizeCalendarRow,
-    fallbackDayInfo,
+    parseImportedCalendarText,
   };
 
   function readStoredCalendarRows() {
     try {
       const rows = JSON.parse(readStorage(CALENDAR_STORE_KEY, "[]"));
-      return Array.isArray(rows) ? rows : [];
+      return parseCalendarRows(rows, "本機快取");
     } catch {
       return [];
     }
   }
 
+  function writeStoredCalendarRows(rows) {
+    return writeStorage(CALENDAR_STORE_KEY, JSON.stringify(rows));
+  }
+
   async function fetchBundledCalendarRows() {
-    const response = await fetch("./行政機關辦公日曆快取.json", { cache: "no-store" });
+    const response = await fetch(BUNDLED_CALENDAR_PATH, { cache: "no-store" });
     if (!response.ok) {
       throw new Error(`${response.status} ${response.statusText}`);
     }
+
     const rows = await response.json();
     if (!Array.isArray(rows)) {
       throw new Error("隨附快取格式不正確。");
     }
-    return rows;
+    return parseCalendarRows(rows, "隨附快取");
   }
 
   async function fetchAndStoreRemoteCalendarRows() {
     const rows = await fetchRemoteCalendarRows();
-    writeStorage(CALENDAR_STORE_KEY, JSON.stringify(rows));
+    writeStoredCalendarRows(rows);
     return rows;
+  }
+
+  function parseImportedCalendarText(text) {
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      throw new Error("JSON 解析失敗。");
+    }
+
+    if (!Array.isArray(payload)) {
+      throw new Error("JSON 根節點必須是陣列。");
+    }
+
+    return parseCalendarRows(payload, "匯入");
   }
 
   async function fetchRemoteCalendarRows() {
@@ -68,7 +91,7 @@
       const csvText = await fetchText(link);
       const rows = parseDgpaCsv(csvText);
       for (const row of rows) {
-        merged.set(row.date, row);
+        merged.set(row.rawDate, row);
       }
     }
 
@@ -80,7 +103,7 @@
       }
     }
 
-    return [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
+    return [...merged.values()].sort((a, b) => a.rawDate.localeCompare(b.rawDate));
   }
 
   async function fetchNtpcCalendarRows() {
@@ -92,21 +115,7 @@
         ? payload.value
         : [];
 
-    return rows
-      .map((row) => {
-        const dateText = normalizeRawDate(row.date);
-        if (!dateText) {
-          return null;
-        }
-        return {
-          date: dateText,
-          name: cleanText(row.name),
-          isholiday: isYes(row.isholiday) ? "是" : "否",
-          holidaycategory: cleanText(row.holidaycategory),
-          description: cleanText(row.description),
-        };
-      })
-      .filter(Boolean);
+    return parseCalendarRows(rows, "線上資料");
   }
 
   async function fetchText(url) {
@@ -194,22 +203,23 @@
       }
 
       const day = dateFromCompact(rawDate);
-      const note = cleanText(row["備註"]);
-      const holiday = isYes(row["是否放假"]);
+      const name = cleanText(row["備註"]);
+      const isHoliday = isYes(row["是否放假"]);
       let category = "";
 
       if (day.getDay() === 0 || day.getDay() === 6) {
-        category = holiday ? "星期六、星期日" : "補行上班";
-      } else if (holiday) {
-        category = note ? "放假之紀念日及節日" : "放假日";
+        category = isHoliday ? "星期六、星期日" : "補行上班";
+      } else if (isHoliday) {
+        category = name ? "放假之紀念日及節日" : "放假日";
       }
 
       rows.push({
-        date: rawDate,
-        name: note,
-        isholiday: holiday ? "是" : "否",
-        holidaycategory: category,
+        rawDate,
+        name,
+        category,
         description: "",
+        isHoliday,
+        source: "線上資料",
       });
     }
 
@@ -258,53 +268,32 @@
     return rows;
   }
 
-  function normalizeCalendarRow(row) {
+  function parseCalendarRows(rows, defaultSource) {
+    if (!Array.isArray(rows)) {
+      return [];
+    }
+    return rows
+      .map((row) => normalizeCalendarRow(row, defaultSource))
+      .filter(Boolean);
+  }
+
+  function normalizeCalendarRow(row, defaultSource) {
     if (!row || typeof row !== "object") {
       return null;
     }
 
-    const rawDate = normalizeRawDate(row.date);
+    const rawDate = normalizeRawDate(row.rawDate || row.date);
     if (!rawDate) {
       return null;
     }
 
-    const day = dateFromCompact(rawDate);
-    if (!day) {
-      return null;
-    }
-
     return {
-      key: dateKey(day),
       rawDate,
       name: cleanText(row.name),
-      category: cleanText(row.holidaycategory),
+      category: cleanText(row.category || row.holidaycategory),
       description: cleanText(row.description),
-      isHoliday: isYes(row.isholiday),
-      source: "快取",
-    };
-  }
-
-  function fallbackDayInfo(day) {
-    if (day.getDay() === 0 || day.getDay() === 6) {
-      return {
-        key: dateKey(day),
-        rawDate: compactDate(day),
-        name: "",
-        isHoliday: true,
-        category: "週末",
-        description: "未取得政府資料時，以星期六、星期日作為假日備援。",
-        source: "備援",
-      };
-    }
-
-    return {
-      key: dateKey(day),
-      rawDate: compactDate(day),
-      name: "",
-      isHoliday: false,
-      category: "",
-      description: "",
-      source: "備援",
+      isHoliday: typeof row.isHoliday === "boolean" ? row.isHoliday : isYes(row.isholiday),
+      source: cleanText(row.source) || defaultSource,
     };
   }
 }());

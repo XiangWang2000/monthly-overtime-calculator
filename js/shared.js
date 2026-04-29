@@ -1,24 +1,5 @@
 (function initOvertimeAppShared() {
-  const DAY_TYPES = ["平日加班", "休息日加班", "國定假日/特休出勤", "例假出勤"];
-  const shared = {
-    APP_TITLE: "月度加班費試算",
-    DATASET_URL: "https://data.ntpc.gov.tw/api/datasets/308DCD75-6434-45BC-A95F-584DA4FED251/json?page=0&size=10000",
-    DGPA_DATASET_PAGE: "https://data.gov.tw/dataset/14718?page=3",
-    HOURLY_DIVISOR: 240,
-    DAY_TYPES,
-    WEEKDAYS: ["日", "一", "二", "三", "四", "五", "六"],
-    DEFAULT_MIN_YEAR: 2017,
-    DEFAULT_SALARY: "30000",
-    STORE_KEY: "overtime-calendar-static-v1",
-    CALENDAR_STORE_KEY: "overtime-calendar-static-cache-v1",
-    WEEKDAY_OVERTIME: DAY_TYPES[0],
-    REST_DAY_OVERTIME: DAY_TYPES[1],
-    HOLIDAY_WORK: DAY_TYPES[2],
-    REGULAR_DAY_WORK: DAY_TYPES[3],
-    WEEKDAY_WARNING_LIMIT: 240,
-    REST_DAY_WARNING_LIMIT: 720,
-    MONTHLY_EXTENSION_LIMIT: 46 * 60,
-    MAX_MONTHLY_EXTENSION_LIMIT: 54 * 60,
+  window.OvertimeAppShared = {
     readStorage,
     writeStorage,
     parseDateKey,
@@ -42,8 +23,6 @@
     getCalendarStart,
     addDays,
   };
-
-  window.OvertimeAppShared = shared;
 
   function readStorage(key, fallback) {
     try {
@@ -145,6 +124,9 @@
   }
 
   function isYes(value) {
+    if (typeof value === "boolean") {
+      return value;
+    }
     return ["是", "true", "1", "2", "y", "yes"].includes(cleanText(value).toLowerCase());
   }
 

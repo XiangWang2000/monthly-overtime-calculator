@@ -1,6 +1,9 @@
+const config = window.OvertimeAppConfig;
 const shared = window.OvertimeAppShared;
 const calendarData = window.OvertimeCalendarData;
-const overtimeSummary = window.OvertimeSummary;
+const calendarDomain = window.OvertimeCalendarDomain;
+const summaryModule = window.OvertimeSummary;
+const viewFormatters = window.OvertimeViewFormatters;
 
 const {
   APP_TITLE,
@@ -9,17 +12,19 @@ const {
   DEFAULT_MIN_YEAR,
   DEFAULT_SALARY,
   STORE_KEY,
+  ELEMENT_IDS,
   WEEKDAY_OVERTIME,
-  REST_DAY_OVERTIME,
-  HOLIDAY_WORK,
-  REGULAR_DAY_WORK,
+  SUMMARY_DEBOUNCE_MS,
+  TOAST_DURATION_MS,
+} = config;
+
+const {
   readStorage,
   writeStorage,
   parseDateKey,
   dateKey,
   isDateKey,
-  minutesToText,
-  pad2,
+  numberFromInput,
   toInteger,
   clamp,
   cleanText,
@@ -28,31 +33,8 @@ const {
   addDays,
 } = shared;
 
-const ELEMENT_IDS = [
-  "pageTitle",
-  "yearInput",
-  "monthInput",
-  "refreshCalendar",
-  "todayButton",
-  "cacheFile",
-  "statusText",
-  "weekdayGrid",
-  "calendarGrid",
-  "selectedInfo",
-  "salaryInput",
-  "dayTypeInput",
-  "hoursInput",
-  "minutesInput",
-  "saveDay",
-  "clearDay",
-  "resultText",
-  "breakdownText",
-  "warningText",
-  "toast",
-];
-
 const state = {
-  holidayData: new Map(),
+  holidayMap: new Map(),
   entries: {},
   salary: DEFAULT_SALARY,
   year: new Date().getFullYear(),
@@ -88,7 +70,7 @@ function bindElements() {
 function populateStaticControls() {
   document.title = APP_TITLE;
   els.pageTitle.textContent = APP_TITLE;
-  renderWeekdayHeaders();
+  els.weekdayGrid.innerHTML = WEEKDAYS.map((day) => `<div class="weekday">${day}</div>`).join("");
   els.dayTypeInput.innerHTML = DAY_TYPES.map((type) => `<option value="${escapeHtml(type)}">${type}</option>`).join("");
   els.salaryInput.value = DEFAULT_SALARY;
 }
@@ -106,10 +88,6 @@ function bindEvents() {
   els.minutesInput.addEventListener("input", updatePreviewText);
   els.saveDay.addEventListener("click", saveSelectedEntry);
   els.clearDay.addEventListener("click", clearSelectedEntry);
-}
-
-function renderWeekdayHeaders() {
-  els.weekdayGrid.innerHTML = WEEKDAYS.map((day) => `<div class="weekday">${day}</div>`).join("");
 }
 
 function handleCalendarClick(event) {
@@ -215,29 +193,22 @@ async function refreshCalendar() {
 }
 
 function applyCalendarRowsAndRender(rows, message) {
-  applyCalendarRows(rows, message);
+  state.holidayMap = calendarDomain.buildHolidayMap(rows);
+  updateCalendarBounds();
+  clampCurrentCalendar();
+  setStatus(message || `已載入行事曆資料，共 ${state.holidayMap.size.toLocaleString()} 筆。`);
   renderAll();
 }
 
-function applyCalendarRows(rows, message) {
-  const map = new Map();
-  for (const row of rows) {
-    const info = calendarData.normalizeCalendarRow(row);
-    if (!info) {
-      continue;
-    }
-    map.set(info.key, info);
-  }
-  state.holidayData = map;
-  updateYearBoundsFromCalendar();
-  clampCurrentCalendar();
-  setStatus(message || `已載入行事曆資料，共 ${map.size.toLocaleString()} 筆。`);
+function updateCalendarBounds() {
+  const bounds = calendarDomain.getYearBounds(state.holidayMap, state.today);
+  state.minYear = bounds.minYear;
+  state.maxYear = bounds.maxYear;
 }
 
 function useWeekendFallback(message, toastMessage = "") {
-  state.holidayData = new Map();
-  state.minYear = DEFAULT_MIN_YEAR;
-  state.maxYear = state.today.getFullYear();
+  state.holidayMap = new Map();
+  updateCalendarBounds();
   setStatus(message);
   renderAll();
   if (toastMessage) {
@@ -250,20 +221,14 @@ async function importCalendarFile(event) {
   if (!file) {
     return;
   }
-  try {
-    const text = await file.text();
-    const rows = JSON.parse(text);
-    if (!Array.isArray(rows)) {
-      throw new Error("JSON 根節點必須是陣列。");
-    }
 
-    const validRows = rows.map(calendarData.normalizeCalendarRow).filter(Boolean);
-    if (!validRows.length) {
+  try {
+    const rows = calendarData.parseImportedCalendarText(await file.text());
+    if (!rows.length) {
       throw new Error("沒有找到可用的行事曆資料。");
     }
-
-    writeStorage(shared.CALENDAR_STORE_KEY, JSON.stringify(rows));
-    applyCalendarRowsAndRender(rows, `已匯入政府行事曆快取，共 ${validRows.length.toLocaleString()} 筆。`);
+    calendarData.writeStoredCalendarRows(rows);
+    applyCalendarRowsAndRender(rows, `已匯入政府行事曆快取，共 ${rows.length.toLocaleString()} 筆。`);
     showToast("快取已匯入");
   } catch (error) {
     setStatus(`匯入失敗：${error.message}`);
@@ -301,11 +266,11 @@ function renderCalendar() {
     const info = getCalendarInfo(day);
     const entry = state.entries[key];
     const isOtherMonth = day.getMonth() + 1 !== state.month;
-    const metaText = cellMetaText(day, info);
-    const entryText = entry && entry.minutes > 0 ? `加班 ${minutesToText(entry.minutes)}` : "";
+    const metaText = calendarDomain.getCellMetaText(day, info, state.month);
+    const entryText = viewFormatters.formatDayEntryText(entry);
 
     cells.push(`
-      <button class="${getDayCellClasses({ isOtherMonth, info, entry, key, todayKey }).join(" ")}" type="button" data-date="${key}" aria-label="${escapeHtml(`${key} ${metaText}`)}">
+      <button class="${getDayCellClasses({ isOtherMonth, info, entry, key, todayKey }).join(" ")}" type="button" data-date="${key}" aria-label="${viewFormatters.formatDayAriaLabel({ dateKey: key, metaText, entryText })}">
         <span class="day-number">${day.getDate()}</span>
         <span class="day-meta">${escapeHtml(metaText)}</span>
         <span class="day-entry">${escapeHtml(entryText)}</span>
@@ -334,7 +299,8 @@ function loadSelectedEntryToForm() {
     els.dayTypeInput.value = entry.dayType;
     setDayDurationInputs(entry.minutes);
   } else {
-    els.dayTypeInput.value = inferDayType(selected);
+    const inferredType = selected ? calendarDomain.inferDayType(getCalendarInfo(selected), selected) : WEEKDAY_OVERTIME;
+    els.dayTypeInput.value = inferredType;
     setDayDurationInputs(0);
   }
   els.salaryInput.value = state.salary;
@@ -348,15 +314,17 @@ function setDayDurationInputs(totalMinutes) {
 
 function updatePreviewText() {
   const selected = parseDateKey(state.selectedDate);
+  if (!selected) {
+    els.selectedInfo.textContent = "";
+    return;
+  }
+
   const info = getCalendarInfo(selected);
-  const pieces = [
-    state.selectedDate,
-    info.name,
-    info.category,
-    info.description,
-    `目前類型：${els.dayTypeInput.value}`,
-  ].filter(Boolean);
-  els.selectedInfo.textContent = pieces.join("\n");
+  els.selectedInfo.textContent = viewFormatters.formatSelectedInfo({
+    selectedDate: state.selectedDate,
+    info,
+    dayType: els.dayTypeInput.value,
+  });
 }
 
 function saveSelectedEntry() {
@@ -365,13 +333,13 @@ function saveSelectedEntry() {
   els.hoursInput.value = String(hours);
   els.minutesInput.value = String(minutes);
 
-  const total = hours * 60 + minutes;
-  if (total === 0) {
+  const totalMinutes = hours * 60 + minutes;
+  if (totalMinutes === 0) {
     delete state.entries[state.selectedDate];
   } else {
     state.entries[state.selectedDate] = {
       dayType: DAY_TYPES.includes(els.dayTypeInput.value) ? els.dayTypeInput.value : WEEKDAY_OVERTIME,
-      minutes: total,
+      minutes: totalMinutes,
     };
   }
 
@@ -395,6 +363,7 @@ function selectDay(key) {
   if (!isDateKey(key)) {
     return;
   }
+
   state.selectedDate = key;
   const selected = parseDateKey(key);
   state.year = selected.getFullYear();
@@ -406,7 +375,7 @@ function selectDay(key) {
 function applyYearMonthInputs() {
   const year = toInteger(els.yearInput.value, state.year);
   const month = toInteger(els.monthInput.value, state.month);
-  const normalized = normalizeYearMonth(year, month);
+  const normalized = calendarDomain.normalizeYearMonth(year, month, state.minYear, state.maxYear);
   state.year = normalized.year;
   state.month = normalized.month;
   clampSelectedToVisibleMonth();
@@ -429,100 +398,36 @@ function clampSelectedToVisibleMonth() {
   }
 }
 
-function normalizeYearMonth(year, month) {
-  let normalizedYear = year;
-  let normalizedMonth = month;
-
-  while (normalizedMonth < 1) {
-    normalizedMonth += 12;
-    normalizedYear -= 1;
-  }
-  while (normalizedMonth > 12) {
-    normalizedMonth -= 12;
-    normalizedYear += 1;
-  }
-  if (normalizedYear < state.minYear) {
-    return { year: state.minYear, month: 1 };
-  }
-  if (normalizedYear > state.maxYear) {
-    return { year: state.maxYear, month: 12 };
-  }
-  return { year: normalizedYear, month: normalizedMonth };
-}
-
 function clampCurrentCalendar() {
-  const normalized = normalizeYearMonth(state.year, state.month);
+  const normalized = calendarDomain.normalizeYearMonth(state.year, state.month, state.minYear, state.maxYear);
   state.year = normalized.year;
   state.month = normalized.month;
 }
 
 function getCalendarInfo(day) {
-  return state.holidayData.get(dateKey(day)) || calendarData.fallbackDayInfo(day);
-}
-
-function inferDayType(day) {
-  const info = getCalendarInfo(day);
-  const combined = `${info.name} ${info.category} ${info.description}`;
-  if (!info.isHoliday) {
-    return WEEKDAY_OVERTIME;
-  }
-  if (info.name && info.name !== "例假日") {
-    return HOLIDAY_WORK;
-  }
-  if (combined.includes("星期六") || combined.includes("星期日") || info.category === "週末") {
-    return day.getDay() === 6 ? REST_DAY_OVERTIME : REGULAR_DAY_WORK;
-  }
-  return HOLIDAY_WORK;
-}
-
-function cellMetaText(day, info) {
-  if (day.getMonth() + 1 !== state.month) {
-    return "";
-  }
-  if (info.name) {
-    return info.name;
-  }
-  if (info.category) {
-    if (!info.isHoliday && (day.getDay() === 0 || day.getDay() === 6)) {
-      return "補班日";
-    }
-    if (info.category === "星期六、星期日") {
-      return day.getDay() === 6 ? "休息日" : "例假";
-    }
-    return info.category;
-  }
-  return "平日";
-}
-
-function updateYearBoundsFromCalendar() {
-  const currentYear = state.today.getFullYear();
-  const years = [...state.holidayData.values()]
-    .map((info) => Number(info.rawDate.slice(0, 4)))
-    .filter((year) => Number.isInteger(year));
-
-  state.minYear = years.length ? Math.min(...years) : DEFAULT_MIN_YEAR;
-  state.maxYear = years.length ? Math.max(currentYear, Math.max(...years)) : currentYear;
+  return calendarDomain.getCalendarInfo(state.holidayMap, day);
 }
 
 function scheduleSummaryUpdate() {
   window.clearTimeout(state.summaryTimer);
-  state.summaryTimer = window.setTimeout(updateSummary, 80);
+  state.summaryTimer = window.setTimeout(updateSummary, SUMMARY_DEBOUNCE_MS);
 }
 
 function updateSummary() {
   state.salary = els.salaryInput.value;
   saveUserState();
 
-  const summary = overtimeSummary.summarizeMonthEntries({
+  const summary = summaryModule.summarizeMonth({
     year: state.year,
     month: state.month,
     entries: state.entries,
-    salaryInput: state.salary,
+    salary: numberFromInput(state.salary),
   });
 
-  els.resultText.textContent = summary.resultText;
-  els.breakdownText.textContent = summary.breakdownText;
-  els.warningText.textContent = summary.warningText;
+  const summaryTexts = viewFormatters.formatSummaryTexts(summary);
+  els.resultText.textContent = summaryTexts.resultText;
+  els.breakdownText.textContent = summaryTexts.breakdownText;
+  els.warningText.textContent = summaryTexts.warningText;
 }
 
 function setStatus(message) {
@@ -535,5 +440,5 @@ function showToast(message) {
   els.toast.classList.add("is-visible");
   state.toastTimer = window.setTimeout(() => {
     els.toast.classList.remove("is-visible");
-  }, 1800);
+  }, TOAST_DURATION_MS);
 }
