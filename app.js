@@ -12,6 +12,32 @@ const WEEKDAY_OVERTIME = DAY_TYPES[0];
 const REST_DAY_OVERTIME = DAY_TYPES[1];
 const HOLIDAY_WORK = DAY_TYPES[2];
 const REGULAR_DAY_WORK = DAY_TYPES[3];
+const ELEMENT_IDS = [
+  "pageTitle",
+  "yearInput",
+  "monthInput",
+  "refreshCalendar",
+  "todayButton",
+  "cacheFile",
+  "statusText",
+  "weekdayGrid",
+  "calendarGrid",
+  "selectedInfo",
+  "salaryInput",
+  "dayTypeInput",
+  "hoursInput",
+  "minutesInput",
+  "saveDay",
+  "clearDay",
+  "resultText",
+  "breakdownText",
+  "warningText",
+  "toast",
+];
+const WEEKDAY_WARNING_LIMIT = 240;
+const REST_DAY_WARNING_LIMIT = 720;
+const MONTHLY_EXTENSION_LIMIT = 46 * 60;
+const MAX_MONTHLY_EXTENSION_LIMIT = 54 * 60;
 
 const state = {
   holidayData: new Map(),
@@ -23,7 +49,6 @@ const state = {
   minYear: DEFAULT_MIN_YEAR,
   maxYear: new Date().getFullYear(),
   today: new Date(),
-  statusText: "正在讀取行事曆...",
   summaryTimer: 0,
   toastTimer: 0,
 };
@@ -43,39 +68,16 @@ async function init() {
 }
 
 function bindElements() {
-  [
-    "yearInput",
-    "monthInput",
-    "refreshCalendar",
-    "todayButton",
-    "cacheFile",
-    "statusText",
-    "weekdayGrid",
-    "calendarGrid",
-    "selectedInfo",
-    "salaryInput",
-    "dayTypeInput",
-    "hoursInput",
-    "minutesInput",
-    "saveDay",
-    "clearDay",
-    "resultText",
-    "breakdownText",
-    "warningText",
-    "toast",
-  ].forEach((id) => {
+  ELEMENT_IDS.forEach((id) => {
     els[id] = document.getElementById(id);
   });
 }
 
 function populateStaticControls() {
   document.title = APP_TITLE;
-  const heading = document.querySelector("h1");
-  if (heading) {
-    heading.textContent = APP_TITLE;
-  }
-  els.weekdayGrid.innerHTML = WEEKDAYS.map((day) => `<div class="weekday">${day}</div>`).join("");
-  els.dayTypeInput.innerHTML = DAY_TYPES.map((type) => `<option value="${escapeAttr(type)}">${type}</option>`).join("");
+  els.pageTitle.textContent = APP_TITLE;
+  renderWeekdayHeaders();
+  els.dayTypeInput.innerHTML = DAY_TYPES.map((type) => `<option value="${escapeHtml(type)}">${type}</option>`).join("");
   els.salaryInput.value = DEFAULT_SALARY;
 }
 
@@ -85,6 +87,7 @@ function bindEvents() {
   els.refreshCalendar.addEventListener("click", () => loadCalendar(true));
   els.todayButton.addEventListener("click", goToday);
   els.cacheFile.addEventListener("change", importCalendarFile);
+  els.calendarGrid.addEventListener("click", handleCalendarClick);
   els.salaryInput.addEventListener("input", () => {
     state.salary = els.salaryInput.value;
     saveUserState();
@@ -95,6 +98,18 @@ function bindEvents() {
   els.minutesInput.addEventListener("input", updatePreviewText);
   els.saveDay.addEventListener("click", saveSelectedEntry);
   els.clearDay.addEventListener("click", clearSelectedEntry);
+}
+
+function renderWeekdayHeaders() {
+  els.weekdayGrid.innerHTML = WEEKDAYS.map((day) => `<div class="weekday">${day}</div>`).join("");
+}
+
+function handleCalendarClick(event) {
+  const cell = event.target.closest(".day-cell");
+  if (!cell || !els.calendarGrid.contains(cell)) {
+    return;
+  }
+  selectDay(cell.dataset.date);
 }
 
 function loadUserState() {
@@ -143,65 +158,77 @@ function readStoredCalendarRows() {
 }
 
 async function loadCalendar(refresh) {
-  if (!refresh) {
-    const storedRows = readStoredCalendarRows();
-    if (storedRows.length) {
-      applyCalendarRows(storedRows, `已載入瀏覽器本機快取，共 ${storedRows.length.toLocaleString()} 筆。`);
-      renderAll();
-      return;
-    }
-    try {
-      const bundledRows = await fetchBundledCalendarRows();
-      applyCalendarRows(bundledRows, `已載入隨附行事曆快取，共 ${bundledRows.length.toLocaleString()} 筆。`);
-      renderAll();
-      return;
-    } catch (error) {
-      try {
-        const remoteRows = await fetchRemoteCalendarRows();
-        writeStorage(CALENDAR_STORE_KEY, JSON.stringify(remoteRows));
-        applyCalendarRows(remoteRows, `已載入線上政府行事曆，共 ${remoteRows.length.toLocaleString()} 筆。`);
-        renderAll();
-        return;
-      } catch (remoteError) {
-        state.holidayData = new Map();
-        state.minYear = DEFAULT_MIN_YEAR;
-        state.maxYear = state.today.getFullYear();
-        setStatus(`無法讀取隨附快取或線上資料，改用週末備援：${remoteError.message || error.message}`);
-        renderAll();
-        return;
-      }
-    }
+  if (refresh) {
+    await refreshCalendar();
+    return;
+  }
+  await loadInitialCalendar();
+}
+
+async function loadInitialCalendar() {
+  const storedRows = readStoredCalendarRows();
+  if (storedRows.length) {
+    applyCalendarRowsAndRender(storedRows, `已載入瀏覽器本機快取，共 ${storedRows.length.toLocaleString()} 筆。`);
+    return;
   }
 
+  try {
+    const bundledRows = await fetchBundledCalendarRows();
+    applyCalendarRowsAndRender(bundledRows, `已載入隨附行事曆快取，共 ${bundledRows.length.toLocaleString()} 筆。`);
+  } catch (bundledError) {
+    try {
+      const remoteRows = await fetchAndStoreRemoteCalendarRows();
+      applyCalendarRowsAndRender(remoteRows, `已載入線上政府行事曆，共 ${remoteRows.length.toLocaleString()} 筆。`);
+    } catch (remoteError) {
+      useWeekendFallback(`無法讀取隨附快取或線上資料，改用週末備援：${remoteError.message || bundledError.message}`);
+    }
+  }
+}
+
+async function refreshCalendar() {
   setStatus("正在嘗試線上更新政府行事曆...");
   try {
-    const remoteRows = await fetchRemoteCalendarRows();
-    writeStorage(CALENDAR_STORE_KEY, JSON.stringify(remoteRows));
-    applyCalendarRows(remoteRows, `已更新線上政府行事曆，共 ${remoteRows.length.toLocaleString()} 筆。`);
-    renderAll();
+    const remoteRows = await fetchAndStoreRemoteCalendarRows();
+    applyCalendarRowsAndRender(remoteRows, `已更新線上政府行事曆，共 ${remoteRows.length.toLocaleString()} 筆。`);
     showToast("行事曆已更新");
   } catch (error) {
     const storedRows = readStoredCalendarRows();
     if (storedRows.length) {
-      applyCalendarRows(storedRows, `線上更新失敗，沿用本機快取：${error.message}`);
-      renderAll();
+      applyCalendarRowsAndRender(storedRows, `線上更新失敗，沿用本機快取：${error.message}`);
       showToast("線上更新失敗，沿用本機快取");
       return;
     }
+
     try {
       const bundledRows = await fetchBundledCalendarRows();
-      applyCalendarRows(bundledRows, `線上更新失敗，改載入隨附快取：${error.message}`);
-      renderAll();
+      applyCalendarRowsAndRender(bundledRows, `線上更新失敗，改載入隨附快取：${error.message}`);
       showToast("線上更新失敗，改載入隨附快取");
     } catch (bundledError) {
-      state.holidayData = new Map();
-      state.minYear = DEFAULT_MIN_YEAR;
-      state.maxYear = state.today.getFullYear();
-      setStatus(`無法讀取快取或線上資料，改用週末備援：${bundledError.message || error.message}`);
-      renderAll();
-      showToast("已改用週末備援");
+      useWeekendFallback(`無法讀取快取或線上資料，改用週末備援：${bundledError.message || error.message}`, "已改用週末備援");
     }
   }
+}
+
+function applyCalendarRowsAndRender(rows, message) {
+  applyCalendarRows(rows, message);
+  renderAll();
+}
+
+function useWeekendFallback(message, toastMessage = "") {
+  state.holidayData = new Map();
+  state.minYear = DEFAULT_MIN_YEAR;
+  state.maxYear = state.today.getFullYear();
+  setStatus(message);
+  renderAll();
+  if (toastMessage) {
+    showToast(toastMessage);
+  }
+}
+
+async function fetchAndStoreRemoteCalendarRows() {
+  const remoteRows = await fetchRemoteCalendarRows();
+  writeStorage(CALENDAR_STORE_KEY, JSON.stringify(remoteRows));
+  return remoteRows;
 }
 
 async function fetchBundledCalendarRows() {
@@ -470,18 +497,10 @@ function renderCalendar() {
     const info = getCalendarInfo(day);
     const entry = state.entries[key];
     const isOtherMonth = day.getMonth() + 1 !== state.month;
-    const classes = ["day-cell"];
-    if (isOtherMonth) classes.push("is-other-month");
-    if (!isOtherMonth && info.isHoliday) classes.push("is-holiday");
-    if (!isOtherMonth && !info.isHoliday && info.category) classes.push("is-workday");
-    if (entry && entry.minutes > 0) classes.push("has-entry");
-    if (key === todayKey) classes.push("is-today");
-    if (key === state.selectedDate) classes.push("is-selected");
-
     const metaText = cellMetaText(day, info);
     const entryText = entry && entry.minutes > 0 ? `加班 ${minutesToText(entry.minutes)}` : "";
     cells.push(`
-      <button class="${classes.join(" ")}" type="button" data-date="${key}" aria-label="${escapeAttr(`${key} ${metaText}`)}">
+      <button class="${getDayCellClasses({ isOtherMonth, info, entry, key, todayKey }).join(" ")}" type="button" data-date="${key}" aria-label="${escapeHtml(`${key} ${metaText}`)}">
         <span class="day-number">${day.getDate()}</span>
         <span class="day-meta">${escapeHtml(metaText)}</span>
         <span class="day-entry">${escapeHtml(entryText)}</span>
@@ -489,9 +508,17 @@ function renderCalendar() {
     `);
   }
   els.calendarGrid.innerHTML = cells.join("");
-  els.calendarGrid.querySelectorAll(".day-cell").forEach((cell) => {
-    cell.addEventListener("click", () => selectDay(cell.dataset.date));
-  });
+}
+
+function getDayCellClasses({ isOtherMonth, info, entry, key, todayKey }) {
+  const classes = ["day-cell"];
+  if (isOtherMonth) classes.push("is-other-month");
+  if (!isOtherMonth && info.isHoliday) classes.push("is-holiday");
+  if (!isOtherMonth && !info.isHoliday && info.category) classes.push("is-workday");
+  if (entry && entry.minutes > 0) classes.push("has-entry");
+  if (key === todayKey) classes.push("is-today");
+  if (key === state.selectedDate) classes.push("is-selected");
+  return classes;
 }
 
 function loadSelectedEntryToForm() {
@@ -499,25 +526,30 @@ function loadSelectedEntryToForm() {
   const entry = state.entries[state.selectedDate];
   if (entry && DAY_TYPES.includes(entry.dayType)) {
     els.dayTypeInput.value = entry.dayType;
-    els.hoursInput.value = String(Math.floor(entry.minutes / 60));
-    els.minutesInput.value = String(entry.minutes % 60);
+    setDayDurationInputs(entry.minutes);
   } else {
     els.dayTypeInput.value = inferDayType(selected);
-    els.hoursInput.value = "0";
-    els.minutesInput.value = "0";
+    setDayDurationInputs(0);
   }
   els.salaryInput.value = state.salary;
   updatePreviewText();
 }
 
+function setDayDurationInputs(totalMinutes) {
+  els.hoursInput.value = String(Math.floor(totalMinutes / 60));
+  els.minutesInput.value = String(totalMinutes % 60);
+}
+
 function updatePreviewText() {
   const selected = parseDateKey(state.selectedDate);
   const info = getCalendarInfo(selected);
-  const pieces = [state.selectedDate];
-  if (info.name) pieces.push(info.name);
-  if (info.category) pieces.push(info.category);
-  if (info.description) pieces.push(info.description);
-  pieces.push(`目前類型：${els.dayTypeInput.value}`);
+  const pieces = [
+    state.selectedDate,
+    info.name,
+    info.category,
+    info.description,
+    `目前類型：${els.dayTypeInput.value}`,
+  ].filter(Boolean);
   els.selectedInfo.textContent = pieces.join("\n");
 }
 
@@ -748,10 +780,10 @@ function updateSummary() {
     const pay = calculateEntryPay(hourlyWage, normalizedEntry);
     subtotal[normalizedEntry.dayType] += pay;
     totalPay += pay;
-    if (normalizedEntry.dayType === WEEKDAY_OVERTIME && normalizedEntry.minutes > 240) {
+    if (normalizedEntry.dayType === WEEKDAY_OVERTIME && normalizedEntry.minutes > WEEKDAY_WARNING_LIMIT) {
       warnings.push(`${formatMonthDay(key)} 平日加班超過4小時，請確認是否符合一日上限。`);
     }
-    if (normalizedEntry.dayType === REST_DAY_OVERTIME && normalizedEntry.minutes > 720) {
+    if (normalizedEntry.dayType === REST_DAY_OVERTIME && normalizedEntry.minutes > REST_DAY_WARNING_LIMIT) {
       warnings.push(`${formatMonthDay(key)} 休息日出勤超過12小時，請確認是否合法。`);
     }
     if (normalizedEntry.dayType === REGULAR_DAY_WORK) {
@@ -760,10 +792,10 @@ function updateSummary() {
   }
 
   const extensionMinutes = totals[WEEKDAY_OVERTIME] + totals[REST_DAY_OVERTIME];
-  if (extensionMinutes > 46 * 60) {
+  if (extensionMinutes > MONTHLY_EXTENSION_LIMIT) {
     warnings.push("平日加班加休息日出勤已超過每月46小時。");
   }
-  if (extensionMinutes > 54 * 60) {
+  if (extensionMinutes > MAX_MONTHLY_EXTENSION_LIMIT) {
     warnings.push("已超過每月54小時，通常即使有勞資會議或工會同意也不得超過。");
   }
 
@@ -953,12 +985,7 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function escapeAttr(value) {
-  return escapeHtml(value);
-}
-
 function setStatus(message) {
-  state.statusText = message;
   els.statusText.textContent = message;
 }
 
